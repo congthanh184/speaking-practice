@@ -1,24 +1,23 @@
-import React, { Component } from 'react';
+import React, { Component, Fragment } from 'react';
 import store from 'store';
+import moment from 'moment';
 import './app.css';
+import './config';
 
-import { stopRecording, initRecoderAndStart } from './flac-recorder';
-import { startRecognition } from './speech-recognition';
-import { EN_READING, FR_READING } from './samples.js';
+import { startRecognition } from './speech/recognition';
+import { readTheSentence, populateVoiceList, isSpeaking } from './speech/synthesis';
+import SamplesList from './lists/samples';
+import {
+  calculateScore,
+  highlightMissed,
+  getFirstFiveWords,
+  generateKey,
+  initDictSample
+} from './utils';
 
-// Initialize Firebase
-// const { firebase } = window;
-// firebase.initializeApp(firebaseConfig);
+window.moment = moment;
 
-const MISSED_LIST = 'missed_list';
-const DICT_SAMPLES = 'dict_samples';
-const COMMON_WORDS = [];
-const LANGUAGE_CODE = { en: 'en-US', fr: 'fr-FR' };
-const FILE_NAME = Math.random()
-  .toString(36)
-  .substring(7);
-
-const QuestionsController = ({ onLangChange }) => (
+const QuestionsController = ({ onLangChange, onModeChange }) => (
   <div className="question-select">
     <span className="lang-select">
       Select language to practice:
@@ -26,48 +25,13 @@ const QuestionsController = ({ onLangChange }) => (
         <option value="en-US">English</option>
         <option value="fr-FR">French</option>
       </select>
+      <select id="selectMode" className="ml-2" onChange={e => onModeChange(e.target.value)}>
+        <option value="read">Read Aloud</option>
+        <option value="repeat">Repeat Sentence</option>
+      </select>
     </span>
   </div>
 );
-
-class SamplesList extends Component {
-  render() {
-    const {
-      onRandomClick, getFirstFiveWords, samples, onSelect, onDefaultClick
-    } = this.props;
-    return (
-      <div className="container sample-list">
-        Content
-        <button className="ml-2" onClick={onRandomClick}>
-          Random
-        </button>
-        <button className="ml-2" onClick={onDefaultClick}>
-          Default
-        </button>
-        <div className="list">
-          {samples.length > 0
-            && samples.map((sample) => {
-              const firstFiveWords = getFirstFiveWords(sample);
-              const key = firstFiveWords.join('+').toLowerCase();
-              return (
-                <div key={key}>
-                  <a
-                    href=""
-                    onClick={(e) => {
-                      e.preventDefault();
-                      onSelect(sample);
-                    }}
-                  >
-                    {`${firstFiveWords.join(' ')} ...`}
-                  </a>
-                </div>
-              );
-            })}
-        </div>
-      </div>
-    );
-  }
-}
 
 export default class App extends Component {
   state = {
@@ -76,7 +40,9 @@ export default class App extends Component {
     languageCode: 'en-US',
     loading: false,
     id: 0,
-    samples: { 'en-US': [], 'fr-FR': [] }
+    samples: { 'en-US': [], 'fr-FR': [] },
+    mode: 'read',
+    repeatState: 'start'
   };
 
   componentDidMount() {
@@ -89,41 +55,16 @@ export default class App extends Component {
     }));
   }
 
-  initDictSample = () => {
-    const dicts = {};
-    dicts[LANGUAGE_CODE.en] = this.buildDict(EN_READING);
-    dicts[LANGUAGE_CODE.fr] = this.buildDict(FR_READING);
-    const samples = {};
-    samples[LANGUAGE_CODE.en] = EN_READING;
-    samples[LANGUAGE_CODE.fr] = FR_READING;
-    return { dicts, samples };
-  };
-
   getOrInitDictSample = () => {
     const dictSample = store.get(DICT_SAMPLES);
     if (dictSample) {
       return dictSample;
     }
-    return this.initDictSample();
-  };
-
-  getFirstFiveWords = sentence => sentence.split(' ').slice(0, 5);
-
-  generateKey = sentence => this.getFirstFiveWords(sentence)
-    .join('+')
-    .toLowerCase();
-
-  buildDict = (samples) => {
-    const dict = {};
-    samples.forEach((sample) => {
-      const key = this.generateKey(sample);
-      dict[key] = 1;
-    });
-    return dict;
+    return initDictSample();
   };
 
   checkAndInsertNewSample = (sample) => {
-    const key = this.generateKey(sample);
+    const key = generateKey(sample);
     if (!this.sampleDict[key]) {
       const { dicts, samples, languageCode } = this.state;
       dicts[languageCode][key] = 1;
@@ -147,30 +88,14 @@ export default class App extends Component {
     return samples[languageCode];
   }
 
-  get flacFileName() {
-    const { languageCode } = this.state;
-    return `${languageCode}-${FILE_NAME}.flac`;
-  }
-
   handleToggleRecording = () => {
     const { recording, currentSample, languageCode } = this.state;
     this.setState(prevState => ({ ...prevState, recording: !recording, url: null }));
     if (recording) {
       return this.recognition.stop();
-      // return stopRecording();
     }
-    // initRecoderAndStart(this.createDownloadLink);
     this.recognition = startRecognition(currentSample, languageCode, this.resolveTranscript);
     this.checkAndInsertNewSample(currentSample);
-  };
-
-  uploadStorage = (blob) => {
-    const storageRef = firebase.storage().ref();
-    const recorderRef = storageRef.child(this.flacFileName);
-    recorderRef.put(blob).then((snapshot) => {
-      console.log('Uploaded a blob or file!');
-      this.getTranslation();
-    });
   };
 
   resolveTranscript = (results) => {
@@ -179,7 +104,7 @@ export default class App extends Component {
     for (let i = 0; i < results.length; i += 1) {
       transcript = `${transcript} ${results[i][0].transcript.toLowerCase()}`;
     }
-    const { score, missed } = this.calculateScore({
+    const { score, missed } = calculateScore({
       transcript,
       sample
     });
@@ -194,45 +119,9 @@ export default class App extends Component {
     }));
   };
 
-  getTranslation = () => {
-    const addMessage = firebase.functions().httpsCallable('addMessage');
-    const { currentSample, languageCode } = this.state;
-    addMessage({
-      sample: '',
-      filename: this.flacFileName,
-      lang: languageCode
-    }).then((result) => {
-      console.log(result);
-      const {
-        data: { transcription: transcript }
-      } = result;
-      const { score, missed } = this.calculateScore({
-        transcript,
-        sample: currentSample
-      });
-      const missedList = this.updateMissedList(missed);
-      this.setState(prevState => ({
-        ...prevState,
-        score,
-        missedList,
-        missed,
-        transcript,
-        loading: false
-      }));
-    });
-  };
-
-  createDownloadLink = (blob) => {
-    const url = window.URL.createObjectURL(blob);
-    console.log({ url, blob });
-    window.test = url;
-    window.blob = blob;
-    this.uploadStorage(blob);
-    this.setState(prevState => ({ ...prevState, url, loading: true }));
-  };
-
   handleLangChange = (value) => {
     this.setState(prevState => ({ ...prevState, languageCode: value }));
+    populateVoiceList(value);
   };
 
   handleIdChange = (value) => {
@@ -258,41 +147,6 @@ export default class App extends Component {
     this.setState({ currentSample: value });
   };
 
-  calculateScore = ({ sample, transcript }) => {
-    const processed = transcript
-      .toLowerCase()
-      .replace(/[,–\.\!\?]/g, '')
-      .split(' ');
-    const missed = [];
-    let total = 0;
-    sample
-      .toLowerCase()
-      .replace(/[,–\.\!\?]/g, '')
-      .split(' ')
-      .forEach((word) => {
-        if (word === '') return;
-        total += 1;
-        const pos = processed.indexOf(word);
-        if (pos === -1) {
-          missed.push(word);
-        } else {
-          processed.splice(pos, 1);
-        }
-      });
-
-    console.log({
-      processed,
-      sample: sample
-        .toLowerCase()
-        .replace(/[,-\.]/g, '')
-        .split(' ')
-    });
-    return {
-      missed,
-      score: 1 - missed.length / total
-    };
-  };
-
   handleRandomClick = () => {
     const total = this.samples.length;
     const randomNumber = Math.floor(Math.random() * total);
@@ -301,7 +155,7 @@ export default class App extends Component {
 
   handleDefaultClick = () => {
     store.remove(DICT_SAMPLES);
-    const { dicts, samples } = this.initDictSample();
+    const { dicts, samples } = initDictSample();
     this.setState(prevState => ({
       ...prevState,
       dicts,
@@ -310,16 +164,70 @@ export default class App extends Component {
     }));
   };
 
-  highlightMissed = (sample, missed) => {
-    if (!sample || sample === undefined || !missed) return '';
-    const result = sample.split(' ').reduce((final, word) => {
-      if (missed.includes(word.toLowerCase())) {
-        return `${final}<span class="text-danger">${word}</span> `;
-      }
-      return `${final + word} `;
-    }, '');
+  handleModeChange = (mode) => {
+    this.setState(prevState => ({ ...prevState, mode }));
+    console.log({ mode });
+    if (mode === 'repeat') {
+      this.interval = setInterval(() => this.repeatSM(), 300);
+    } else {
+      clearInterval(this.interval);
+    }
+  };
 
-    return result;
+  repeatSM = () => {
+    const { repeatState, startTime, recording } = this.state;
+    const currentTime = moment();
+    const diffTime = startTime && startTime.diff(currentTime);
+    if (recording) return;
+    switch (repeatState) {
+      case 'start':
+        this.setState(prevState => ({
+          ...prevState,
+          repeatState: 'count-down-spk',
+          countDown: SPEAK_COUNTDOWN_MS / 1000,
+          startTime: moment().add(SPEAK_COUNTDOWN_MS, 'milliseconds')
+        }));
+        break;
+      case 'count-down-spk':
+        if (diffTime <= 0) {
+          readTheSentence('Hello this is a test run');
+          this.setState(prevState => ({ ...prevState, repeatState: 'speak' }));
+        } else {
+          this.setState(prevState => ({
+            ...prevState,
+            countDown: moment.duration(diffTime, 'milliseconds').seconds()
+          }));
+        }
+        break;
+      case 'speak':
+        if (!isSpeaking()) {
+          this.setState(prevState => ({
+            ...prevState,
+            repeatState: 'count-down-repeat',
+            countDown: SPEAK_COUNTDOWN_MS / 1000,
+            startTime: moment().add(SPEAK_COUNTDOWN_MS, 'milliseconds')
+          }));
+        }
+        break;
+      case 'count-down-repeat':
+        if (diffTime <= 0) {
+          this.setState(prevState => ({ ...prevState, repeatState: 'record' }));
+        } else {
+          this.setState(prevState => ({
+            ...prevState,
+            countDown: moment.duration(diffTime, 'milliseconds').seconds()
+          }));
+        }
+        break;
+      case 'record':
+        this.setState(prevState => ({
+          ...prevState,
+          repeatState: 'start'
+        }));
+        this.handleToggleRecording();
+        clearInterval(this.interval);
+        break;
+    }
   };
 
   render() {
@@ -332,9 +240,11 @@ export default class App extends Component {
       missedList,
       loading,
       missed,
+      mode,
+      countDown,
+      repeatState,
       currentSample
     } = this.state;
-    window.test = this.calculateScore;
     const sortedList = Object.keys(missedList || {}).sort((a, b) => missedList[a] - missedList[b]);
 
     console.log({ currentSample, missed });
@@ -345,26 +255,34 @@ export default class App extends Component {
           <div className="col-md-3">
             <SamplesList
               samples={this.samples}
-              getFirstFiveWords={this.getFirstFiveWords}
               onSelect={sample => this.setState({ currentSample: sample })}
               onRandomClick={this.handleRandomClick}
               onDefaultClick={this.handleDefaultClick}
             />
           </div>
           <div className="col-md-7">
-            <QuestionsController onLangChange={this.handleLangChange} />
+            <QuestionsController
+              onLangChange={this.handleLangChange}
+              onModeChange={this.handleModeChange}
+            />
 
-            <div className="text-area">
-              <textarea
-                rows="6"
-                className="mt-5 mb-5"
-                style={{ width: '100%' }}
-                value={currentSample}
-                onChange={e => this.handleTextChange(e.target.value)}
-              />
-            </div>
+            {mode === 'read' ? (
+              <div className="text-area">
+                <textarea
+                  rows="6"
+                  className="mt-5 mb-5"
+                  style={{ width: '100%' }}
+                  value={currentSample}
+                  onChange={e => this.handleTextChange(e.target.value)}
+                />
+              </div>
+            ) : (
+              <div className="flex-center mt-5 mb-5">
+                <h3>{`${repeatState}-${countDown}`}</h3>
+              </div>
+            )}
 
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="flex-center">
               <button
                 className="btn btn-primary btn-large"
                 onClick={this.handleToggleRecording}
@@ -391,9 +309,7 @@ export default class App extends Component {
                 </div>
               )}
               <div className="alert alert-dark mt-3" role="alert">
-                <div
-                  dangerouslySetInnerHTML={{ __html: this.highlightMissed(currentSample, missed) }}
-                />
+                <div dangerouslySetInnerHTML={{ __html: highlightMissed(currentSample, missed) }} />
               </div>
               {transcript && (
                 <div>

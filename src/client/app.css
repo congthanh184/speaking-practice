@@ -6,3 +6,9 @@ body {
   text-align: center;
   margin: auto;
 }
+
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
