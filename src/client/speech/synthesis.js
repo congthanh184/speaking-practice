@@ -4,7 +4,7 @@ let voices = [];
 function populateVoiceList(lang) {
   const allVoices = synth.getVoices();
 
-  voices = allVoices.filter(voice => voice.lang.includes(lang));
+  voices = allVoices.filter(voice => voice.lang.toLowerCase().includes(lang.toLowerCase()));
 }
 
 function readTheSentence(txtValue, onEndCallback) {
@@ -12,8 +12,9 @@ function readTheSentence(txtValue, onEndCallback) {
   const randomNumber = Math.floor(Math.random() * voices.length);
 
   utterThis.voice = voices[randomNumber];
-  utterThis.rate = 1.1;
+  utterThis.rate = 0.95;
   synth.speak(utterThis);
+  console.log(voices[randomNumber], voices, randomNumber);
   utterThis.onend = function (event) {
     console.log('Utterance has finished being spoken');
   };

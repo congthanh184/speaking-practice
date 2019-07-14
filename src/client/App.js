@@ -7,6 +7,7 @@ import './config';
 import { startRecognition } from './speech/recognition';
 import { readTheSentence, populateVoiceList, isSpeaking } from './speech/synthesis';
 import SamplesList from './lists/samples';
+import { repeatSM } from './sm/repeat';
 import {
   calculateScore,
   highlightMissed,
@@ -17,7 +18,7 @@ import {
 
 window.moment = moment;
 
-const QuestionsController = ({ onLangChange, onModeChange }) => (
+const QuestionsController = ({ onLangChange, onModeChange, onRandomClick }) => (
   <div className="question-select">
     <span className="lang-select">
       Select language to practice:
@@ -29,6 +30,9 @@ const QuestionsController = ({ onLangChange, onModeChange }) => (
         <option value="read">Read Aloud</option>
         <option value="repeat">Repeat Sentence</option>
       </select>
+      <button className="ml-2" onClick={onRandomClick}>
+        Random
+      </button>
     </span>
   </div>
 );
@@ -42,7 +46,8 @@ export default class App extends Component {
     id: 0,
     samples: { 'en-US': [], 'fr-FR': [] },
     mode: 'read',
-    repeatState: 'start'
+    hide: true,
+    repeatState: {}
   };
 
   componentDidMount() {
@@ -55,12 +60,12 @@ export default class App extends Component {
     }));
   }
 
-  getOrInitDictSample = () => {
+  getOrInitDictSample = (mode) => {
     const dictSample = store.get(DICT_SAMPLES);
     if (dictSample) {
       return dictSample;
     }
-    return initDictSample();
+    return initDictSample(mode);
   };
 
   checkAndInsertNewSample = (sample) => {
@@ -90,7 +95,12 @@ export default class App extends Component {
 
   handleToggleRecording = () => {
     const { recording, currentSample, languageCode } = this.state;
-    this.setState(prevState => ({ ...prevState, recording: !recording, url: null }));
+    this.setState(prevState => ({
+      ...prevState,
+      recording: !recording,
+      url: null,
+      hide: true
+    }));
     if (recording) {
       return this.recognition.stop();
     }
@@ -115,6 +125,7 @@ export default class App extends Component {
       missedList,
       missed,
       transcript,
+      hide: false,
       loading: false
     }));
   };
@@ -150,7 +161,12 @@ export default class App extends Component {
   handleRandomClick = () => {
     const total = this.samples.length;
     const randomNumber = Math.floor(Math.random() * total);
-    this.setState(prevState => ({ ...prevState, currentSample: this.samples[randomNumber] }));
+    this.setState(prevState => ({
+      ...prevState,
+      currentSample: this.samples[randomNumber],
+      hide: true
+    }));
+    if (this.state.mode === 'repeat') this.startRepeatSM();
   };
 
   handleDefaultClick = () => {
@@ -164,70 +180,53 @@ export default class App extends Component {
     }));
   };
 
+  startRepeatSM = () => (this.interval = setInterval(() => this.runRepeatSM(), 300));
+
   handleModeChange = (mode) => {
-    this.setState(prevState => ({ ...prevState, mode }));
     console.log({ mode });
     if (mode === 'repeat') {
-      this.interval = setInterval(() => this.repeatSM(), 300);
+      this.startRepeatSM();
     } else {
       clearInterval(this.interval);
     }
+    populateVoiceList(this.state.languageCode);
+    const { dicts, samples } = this.getOrInitDictSample(mode);
+    const randomNumber = Math.floor(Math.random() * samples[LANGUAGE_CODE.en].length);
+    this.setState(prevState => ({
+      ...prevState,
+      dicts,
+      samples,
+      mode,
+      currentSample: samples[LANGUAGE_CODE.en][randomNumber]
+    }));
   };
 
-  repeatSM = () => {
-    const { repeatState, startTime, recording } = this.state;
-    const currentTime = moment();
-    const diffTime = startTime && startTime.diff(currentTime);
-    if (recording) return;
-    switch (repeatState) {
-      case 'start':
-        this.setState(prevState => ({
-          ...prevState,
-          repeatState: 'count-down-spk',
-          countDown: SPEAK_COUNTDOWN_MS / 1000,
-          startTime: moment().add(SPEAK_COUNTDOWN_MS, 'milliseconds')
-        }));
-        break;
-      case 'count-down-spk':
-        if (diffTime <= 0) {
-          readTheSentence('Hello this is a test run');
-          this.setState(prevState => ({ ...prevState, repeatState: 'speak' }));
-        } else {
-          this.setState(prevState => ({
-            ...prevState,
-            countDown: moment.duration(diffTime, 'milliseconds').seconds()
-          }));
-        }
-        break;
-      case 'speak':
-        if (!isSpeaking()) {
-          this.setState(prevState => ({
-            ...prevState,
-            repeatState: 'count-down-repeat',
-            countDown: SPEAK_COUNTDOWN_MS / 1000,
-            startTime: moment().add(SPEAK_COUNTDOWN_MS, 'milliseconds')
-          }));
-        }
-        break;
-      case 'count-down-repeat':
-        if (diffTime <= 0) {
-          this.setState(prevState => ({ ...prevState, repeatState: 'record' }));
-        } else {
-          this.setState(prevState => ({
-            ...prevState,
-            countDown: moment.duration(diffTime, 'milliseconds').seconds()
-          }));
-        }
-        break;
+  runRepeatSM = () => {
+    const {
+      mode, recording, repeatState, currentSample
+    } = this.state;
+    const { scheduledTime, countDown, state } = repeatState;
+    if (mode !== 'repeat') return;
+    const output = repeatSM({
+      state: state || 'start',
+      input: { recording, isSpeaking: isSpeaking(), scheduledTime }
+    });
+    switch (output.state) {
       case 'record':
-        this.setState(prevState => ({
-          ...prevState,
-          repeatState: 'start'
-        }));
         this.handleToggleRecording();
         clearInterval(this.interval);
         break;
+      case 'speak':
+        readTheSentence(currentSample);
+        break;
+      default:
+        break;
     }
+    this.setState(prevState => ({
+      ...prevState,
+      repeatState: Object.assign(repeatState, output),
+      hide: true
+    }));
   };
 
   render() {
@@ -241,13 +240,13 @@ export default class App extends Component {
       loading,
       missed,
       mode,
-      countDown,
       repeatState,
+      hide,
       currentSample
     } = this.state;
     const sortedList = Object.keys(missedList || {}).sort((a, b) => missedList[a] - missedList[b]);
 
-    console.log({ currentSample, missed });
+    // console.log({ currentSample, missed, repeatState });
     return (
       <div className="App">
         <header className="App-header mb-5 text-center">Speaking Practice</header>
@@ -256,7 +255,6 @@ export default class App extends Component {
             <SamplesList
               samples={this.samples}
               onSelect={sample => this.setState({ currentSample: sample })}
-              onRandomClick={this.handleRandomClick}
               onDefaultClick={this.handleDefaultClick}
             />
           </div>
@@ -264,6 +262,7 @@ export default class App extends Component {
             <QuestionsController
               onLangChange={this.handleLangChange}
               onModeChange={this.handleModeChange}
+              onRandomClick={this.handleRandomClick}
             />
 
             {mode === 'read' ? (
@@ -278,19 +277,28 @@ export default class App extends Component {
               </div>
             ) : (
               <div className="flex-center mt-5 mb-5">
-                <h3>{`${repeatState}-${countDown}`}</h3>
+                <h3>{`${repeatState.state}-${repeatState.countDown}`}</h3>
               </div>
             )}
 
             <div className="flex-center">
               <button
-                className="btn btn-primary btn-large"
+                className={`btn ${recording ? 'btn-danger' : 'btn-primary'} btn-large`}
                 onClick={this.handleToggleRecording}
                 type="button"
                 disabled={loading}
               >
                 {recording ? '\u23F9 Stop' : '\u25B6 Start'}
               </button>
+              {!hide && (
+                <button
+                  className="btn btn-secondary btn-large ml-2"
+                  onClick={this.startRepeatSM}
+                  type="button"
+                >
+                  Retry
+                </button>
+              )}
             </div>
             <div className="mt-5">
               <div>
@@ -309,8 +317,13 @@ export default class App extends Component {
                 </div>
               )}
               <div className="alert alert-dark mt-3" role="alert">
-                <div dangerouslySetInnerHTML={{ __html: highlightMissed(currentSample, missed) }} />
+                {!hide && (
+                  <div
+                    dangerouslySetInnerHTML={{ __html: highlightMissed(currentSample, missed) }}
+                  />
+                )}
               </div>
+
               {transcript && (
                 <div>
                   Transcript:

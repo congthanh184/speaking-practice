@@ -3,15 +3,10 @@ import { getFirstFiveWords } from '../utils';
 
 class SamplesList extends Component {
   render() {
-    const {
-      onRandomClick, samples, onSelect, onDefaultClick
-    } = this.props;
+    const { samples, onSelect, onDefaultClick } = this.props;
     return (
       <div className="container sample-list">
         Content
-        <button className="ml-2" onClick={onRandomClick}>
-          Random
-        </button>
         <button className="ml-2" onClick={onDefaultClick}>
           Default
         </button>

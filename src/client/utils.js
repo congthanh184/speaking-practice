@@ -1,12 +1,21 @@
 import { EN_READING, FR_READING } from './samples/read-aloud';
+import { EN_SENTENCES, FR_SENTENCES } from './samples/repeat-sentence';
 
-const initDictSample = () => {
+const loadSamples = (mode) => {
+  if (mode === 'read') {
+    return { EN: EN_READING, FR: FR_READING };
+  }
+  return { EN: EN_SENTENCES, FR: FR_SENTENCES };
+};
+
+const initDictSample = (mode = 'read') => {
   const dicts = {};
-  dicts[LANGUAGE_CODE.en] = buildDict(EN_READING);
-  dicts[LANGUAGE_CODE.fr] = buildDict(FR_READING);
+  const { EN, FR } = loadSamples(mode);
+  dicts[LANGUAGE_CODE.en] = buildDict(EN);
+  dicts[LANGUAGE_CODE.fr] = buildDict(FR);
   const samples = {};
-  samples[LANGUAGE_CODE.en] = EN_READING;
-  samples[LANGUAGE_CODE.fr] = FR_READING;
+  samples[LANGUAGE_CODE.en] = EN;
+  samples[LANGUAGE_CODE.fr] = FR;
   return { dicts, samples };
 };
 
